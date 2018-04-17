@@ -2,14 +2,15 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include "ipc.h"
 #include <sys/wait.h>
 #include <setjmp.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <semaphore.h>
-#include <sys/mmap.h>
-
+#include <sys/mman.h>
+#include <stdlib.h>
+#include <errno.h>
+#include "ipc.h"
 
 static int procB_exit_code = EXIT_SUCCESS;
 
@@ -17,6 +18,7 @@ static int procB_exit_code = EXIT_SUCCESS;
 static pid_t pid_proc_A;
 static pid_t pid_proc_B;
 
+static int pipedes[2];
 //unlink on exit if not NULL
 static struct ipc * addr; //address shared memory
 static int shm_procBC_des;
@@ -48,6 +50,16 @@ static void sig_usr1_handl(int sig) //Process B SIGUSR1 handler
 		siglongjmp(senv, 1);
 }
 
+static void errMsg(const char * str)
+{
+	if (getpid() == pid_proc_A)
+		printf("Proc A error: %s. errno = %d\n", str, errno);
+	if (getpid() == pid_proc_B){
+		printf("Proc B error: %s. errno = %d\n", str, errno);
+		procB_exit_code = EXIT_FAILURE; //used only for proc B
+	}
+	return;
+}
 
 static void onExitB(void)
 {
@@ -56,9 +68,9 @@ static void onExitB(void)
 	if (addr && addr->C_pid){
 		if (kill(addr->C_pid, SIGTERM) == -1)  //SIGTERM for process C 
 			errMsg("kill");
-		else{
+	}else{
 			errMsg("could not read pid process C");
-		}
+	}
 	// deallocation resources and exit	
 	if (sem_procBC_read){
 		if (sem_close(sem_procBC_read) == -1)
@@ -86,36 +98,21 @@ static void onExitB(void)
 	return;
 }
 
-
-static void errMsg(const char * str)
+static void errExitA(const char * str)
 {
-	switch (getpid()){
-	case pid_proc_A:
-		printf("Proc A error: %s. errno = %d\n", str, errno);
-		break;
-	case pid_proc_B:
-		printf("Proc B error: %s. errno = %d\n", str, errno);
-		procB_exit_code = EXIT_FAILURE; //used only for proc B
-	}
-	return;
+	printf("Proc A error: %s. errno = %d\n", str, errno);
+	if (!pid_proc_B)
+		kill(pid_proc_B, SIGTERM); // for proc B 
+	if (wait(NULL) == -1)
+		errMsg("wait");
+	exit(EXIT_FAILURE);
 }
 
-// recognize process A and B
-static void errExit(const char * str)
+static void errExitB(const char * str)
 {
-	switch (getpid()){ 
-	case pid_proc_A:
-		printf("Proc A error: %s. errno = %d\n", str, errno);
-		if (!pid_proc_B)
-			kill(pid_proc_B, SIGTERM); // for proc B 
-		if (wait(NULL) == -1)
-			errMsg("wait");
-		exit(EXIT_FAILURE);
-	case pid_proc_B:
-		printf("Proc B error: %s. errno = %d\n", str, errno);
-		onExitB();
-		exit(EXIT_FAILURE);
-	}
+	printf("Proc B error: %s. errno = %d\n", str, errno);
+	onExitB();
+	exit(EXIT_FAILURE);
 }
 
 void procB_func(void) //Process B
@@ -126,41 +123,40 @@ void procB_func(void) //Process B
 	act.sa_handler = &sig_usr1_handl;
 	act.sa_flags = 0;
 	if (sigaction(SIGUSR1, &act, NULL) == -1)
-		errExit("sigaction");
+		errExitB("sigaction");
 
 	//set new handler for SIGTERM	
-	struct sigaction act;
 	sigemptyset(&act.sa_mask);
 	act.sa_handler = &sig_termB_handl;
 	act.sa_flags = 0;
 	if (sigaction(SIGTERM, &act, NULL) == -1)
-		errExit("sigaction");
+		errExitB("sigaction");
 
 	//create semophore
-	if (sem_procBC_read = sem_open(SEM_RNAME, O_CREAT) == SEM_FAILED)
-		errExit("sem_open");
-	if (sem_procBC_write = sem_open(SEM_WNAME, O_CREAT) == SEM_FAILED)
-		errExit("sem_open");
+	if ((sem_procBC_read = sem_open(SEM_RNAME, O_CREAT))== SEM_FAILED)
+		errExitB("sem_open");
+	if ((sem_procBC_write = sem_open(SEM_WNAME, O_CREAT)) == SEM_FAILED)
+		errExitB("sem_open");
 	
 	//create and mapped shared mamory
-	if (shm_procBC_des = shm_open(SHM_NAME, O_CREAT|O_RDWR|O_TRUNC, S_IRUSR|S_IWUSR) == -1)
-		errExit("shm_open");
-	if (ftruncate(shm_procBC_des, sizeof(ipc)) == -1)
-		errExit("ftruncate");
-	if (addr = mmap(NULL, sizeof(ipc), PROT_WRITE, MAP_SHARED, shm_procBC_des, 0) == MAP_FAILED)
-		errExit("mmap");
+	if ((shm_procBC_des = shm_open(SHM_NAME, O_CREAT|O_RDWR|O_TRUNC, S_IRUSR|S_IWUSR)) == -1)
+		errExitB("shm_open");
+	if (ftruncate(shm_procBC_des, sizeof(struct ipc)) == -1)
+		errExitB("ftruncate");
+	if ((addr = mmap(NULL, sizeof(struct ipc), PROT_WRITE, MAP_SHARED, shm_procBC_des, 0)) == MAP_FAILED)
+		errExitB("mmap");
 	
 	//exchange PID's between process B and C
 	addr->B_pid = getpid();
-	addr-C_pid = 0;
+	addr->C_pid = 0;
 	if (sem_post(sem_procBC_write) == -1)	//unlock proc C
-		errExit("sem_post");
+		errExitB("sem_post");
 	if (sem_wait(sem_procBC_read) == -1)
-		errExit("sem_wait");
+		errExitB("sem_wait");
 
 	//read from pipe and write to shared memory
 	if (sem_post(sem_procBC_write) == -1)	//unlock for write
-		errExit("sem_post");
+		errExitB("sem_post");
 
 	if (!sigsetjmp(senv, 1))	//longjmp from handler SIGUSR1
 		canJmp = 1;
@@ -169,14 +165,14 @@ void procB_func(void) //Process B
 		ssize_t cnt;
 		unsigned int i;
 		if ((cnt = read(pipedes[0], &i, sizeof(int))) == -1)
-			errExit("read");
+			errExitB("read");
 		i = i * i;
 		
 		if (sem_wait(sem_procBC_write) == -1)
-			errExit("sem_wait");
+			errExitB("sem_wait");
 		addr->num = i;
 		if (sem_post(sem_procBC_read) == -1)
-			errExit("sem_post");
+			errExitB("sem_post");
 	}
 	// deallocate resources
 	onExitB();	
@@ -188,52 +184,51 @@ void procB_func(void) //Process B
 int main(void) //Process A, that  fork process B
 {
 	pid_proc_A = getpid();
-	int pipedes[2];
-	if (pipe() == -1)
-		errExit("pipe");
+	if (pipe(pipedes) == -1)
+		errExitA("pipe");
 	
 	switch (pid_proc_B = fork()){
 	case -1:
-		errExit("fork");
+		errExitA("fork");
 	case 0: //procB
 		pid_proc_B = getpid();
 		if (close(pipedes[1]) == -1)
-			errExit("close");
+			errExitA("close");
 		procB_func();
 		exit(procB_exit_code);
 	default://procA
 		if (close(pipedes[0]) == -1)
-			errExit("close");
+			errExitA("close");
 		//set new handler for SIGTERM	
 		struct sigaction act;
 		sigemptyset(&act.sa_mask);
 		act.sa_handler = &sig_term_handl;
 		act.sa_flags = 0;
 		if (sigaction(SIGTERM, &act, NULL) == -1)
-			errExit("sigaction");
+			errExitA("sigaction");
 	}
 
 	while (!term_flag){
 		unsigned int i;		//int >= 2byte
 		int cnt;
-		printf("Введите число (0-256): ")
-		if (cnt = scanf("%d", &i) == EOF)
-			errExit("scanf");
+		printf("Введите число (0-256): ");
+		if ((cnt = scanf("%d", &i)) == EOF)
+			errExitA("scanf");
 		if (cnt == 0 || i > 256){
 			printf("\nОшибка ввода\n");
 			continue;
 		}
 		printf("Введенное число: %d\n", i);
 		if (write(pipedes[1], &i, sizeof(int)) == -1)
-			errExit("pipe");
-		if (fflush(pipedes[1]))
-			errExit("fflush");
+			errExitA("pipe");
+//		if (fflush(pipedes[1]))
+//			errExitA("fflush");
 	}
 
 	if (close(pipedes[1]) == -1)
-		errExit("close");
+		errExitA("close");
 	if (wait(NULL) == -1)
-		errExit("wait");
+		errExitA("wait");
 	exit(EXIT_SUCCESS);
 }
 

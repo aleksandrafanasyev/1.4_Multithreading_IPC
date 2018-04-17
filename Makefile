@@ -4,17 +4,17 @@ SHELL := /bin/sh
 CC := gcc
 CFLAGS := -g -Wall -Werror
 LDFLAGS := -g -Wall -Werror
-LIBS := -lpthread
+LIBS := -lpthread -lrt
 
 all: main_A_B main_C
        
 main_A_B: main_A_B.o
-	$(CC) $(LDFLAGS) -o main_A_B
+	$(CC) $(LDFLAGS) $(LIBS) -o main_A_B
 
 main_C: main_C.o
 	$(CC) $(LDFLAGS) $(LIBS) -o main_C
 
-main_A_B.o:main_A_B.c ipc.h
+main_A_B.o: main_A_B.c ipc.h
 	$(CC) -c $(CFLAGS) -o main_A_B.o
 
 main_C.o: main_C.c ipc.h
