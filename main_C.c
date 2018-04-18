@@ -3,16 +3,16 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <pthread.h>
-#include "ipc.h"
 #include <setjmp.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <semaphore.h>
-#include <sys/mmap.h>
-#
+#include <sys/mman.h>
+#include <stdlib.h>
+#include <errno.h>
+#include "ipc.h"
 
-static pid_t pid_C2;
-static int proc_exit_code = EXIT_SUCCESS;
+static int procC_exit_code = EXIT_SUCCESS;
 //IPC 
 static struct ipc * addr; //address shared memory
 static int shm_procBC_des;
@@ -42,6 +42,13 @@ static void sig_alarm_handl(int sig)
 	wakeup_flag = 1;
 }
 
+static void errMsg(const char * str)
+{
+	printf("Proc C error: %s. errno = %d\n", str, errno);
+	procC_exit_code = EXIT_FAILURE;
+	return;
+}
+
 static void onExit(void)
 {
 	if (sem_procBC_read){
@@ -68,16 +75,8 @@ static void onExit(void)
 	return;
 }
 
-static void errMsg(const char * str)
-{
-	printf("Proc C error: %s. errno = %d\n", str, errno);
-	procC_exit_code = EXIT_FAILURE;
-	return;
-}
-
 static void errExit(const char * str)
 {
-	
 	printf("Proc C error: %s. errno = %d\n", str, errno);
 	onExit();
 	exit(EXIT_FAILURE);
@@ -90,7 +89,7 @@ static void * thread_C2_func (void * arg)
 	sigemptyset(&act.sa_mask);
 	act.sa_handler = &sig_alarm_handl;
 	act.sa_flags = 0;
-	if (sigaction(SIGALARM, &act, NULL) == -1)
+	if (sigaction(SIGALRM, &act, NULL) == -1)
 		errExit("sigaction");
 
 	for (;;) {
@@ -116,6 +115,7 @@ static void * thread_C2_func (void * arg)
 		}
 		pthread_testcancel();
 	}
+	return 0;
 }
 
 
@@ -130,23 +130,23 @@ int main(void)
 		errExit("sigaction");
 
 	//create semophore
-	if (sem_procBC_read = sem_open(SEM_RNAME, O_CREAT) == SEM_FAILED)
+	if ((sem_procBC_read = sem_open(SEM_RNAME, O_CREAT)) == SEM_FAILED)
 		errExit("sem_open");
-	if (sem_procBC_write = sem_open(SEM_WNAME, O_CREAT) == SEM_FAILED)
+	if ((sem_procBC_write = sem_open(SEM_WNAME, O_CREAT)) == SEM_FAILED)
 		errExit("sem_open");
 
 	//create and mapped shared mamory
-	if (shm_procBC_des = shm_open(SHM_NAME, O_RDWR, S_IRUSR|S_IWUSR) == -1)
+	if ((shm_procBC_des = shm_open(SHM_NAME, O_RDWR, S_IRUSR|S_IWUSR)) == -1)
 		errExit("shm_open");
-	if (ftruncate(shm_procBC_des, sizeof(ipc)) == -1)
+	if (ftruncate(shm_procBC_des, sizeof(struct ipc)) == -1)
 		errExit("ftruncate");
-	if (addr = mmap(NULL, sizeof(ipc), PROT_WRITE, MAP_SHARED, shm_procBC_des, 0) == MAP_FAILED)
+	if ((addr = mmap(NULL, sizeof(struct ipc), PROT_WRITE, MAP_SHARED, shm_procBC_des, 0)) == MAP_FAILED)
 		errExit("mmap");
 	
 	//exchange PID's between process B and C
 	if (sem_wait(sem_procBC_write) == -1)
 		errExit("sem_wait");
-	addr-C_pid = getpid();	//send proc B C_pid
+	addr->C_pid = getpid();	//send proc B C_pid
 	if (sem_post(sem_procBC_read) == -1)	//unlock proc B
 		errExit("sem_post");
 
@@ -170,7 +170,7 @@ int main(void)
 			errExit("sem_post");
 
 		// wake up thread C2 from sleep
-		if (pthread_kill(pthread_C2_des, SIGALARM))
+		if (pthread_kill(thread_C2_des, SIGALRM))
 			errExit("pthread_kill");
 	
 		if (pthread_cond_wait(&cond_rw, &mutex_rw))
@@ -186,7 +186,7 @@ int main(void)
 		if (pthread_mutex_unlock(&mutex_rw))
 			errExit("phread_mutex_unlock");
 
-	if (prthread_cancel(thread_C2_des))
+	if (pthread_cancel(thread_C2_des))
 		errMsg("pthread_cancel");
 
 	if (pthread_join(thread_C2_des, NULL)) 
