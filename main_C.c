@@ -13,7 +13,6 @@
 #include <string.h>
 #include "ipc.h"
 
-static int procC_exit_code = EXIT_SUCCESS;
 //IPC 
 static struct ipc * addr; //address shared memory
 static int shm_procBC_des;
@@ -51,7 +50,6 @@ static void sig_int_handl(int sig) //Process C SIGINT handler
 static void errMsg(const char * str)
 {
 	printf("Proc C error: %s. errno = %s\n", str, strerror(errno));
-	procC_exit_code = EXIT_FAILURE;
 	return;
 }
 
@@ -98,7 +96,7 @@ static void errExit(const char * str)
 
 static void * thread_C2_func (void * arg)
 {
-	printf("Start thread C2\n");
+//	printf("Start thread C2\n");
 	int i;
 	unsigned int tmp;
 	for (;;) {
@@ -221,7 +219,7 @@ int main(void)
 	if (int_flag == 1)
 		send_STerm_AB();
 	onExit();
-	exit(procC_exit_code);
+	exit(EXIT_SUCCESS);
 }
 
 
