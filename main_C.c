@@ -79,7 +79,7 @@ static void onExit(void)
 	if (sem_close(sem_procBC_write) == -1)
 		errMsg("sem_close");
 	if (addr != 0)
-		if (munmap(addr, sizeof(int)) == -1)
+		if (munmap(addr, sizeof(struct ipc)) == -1)
 			errMsg("munmap");
 	if (close(shm_procBC_des) == -1)
 		errMsg("close");

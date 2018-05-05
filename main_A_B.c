@@ -83,7 +83,7 @@ static void onExitB(void) // deallocation resources
 	if (sem_unlink(SEM_WNAME) == -1)
 		errMsg("B", "sem_unlink");
 	
-	if (munmap(addr, sizeof(int)) == -1)
+	if (munmap(addr, sizeof(struct ipc)) == -1)
 		errMsg("B", "munmap");
 
 	if (close(shm_procBC_des) == -1)
